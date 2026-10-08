@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import express from 'express';
-import { createBooking, listBookings } from './bookings.js';
+import { ConflictError, createBooking, listBookings } from './bookings.js';
 import { createStore } from './store.js';
 
 function allowMethods(methods) {
@@ -49,6 +49,9 @@ export function createAppServer({ store = createStore() } = {}) {
   });
   app.use((error, request, response, next) => {
     if (response.headersSent) return next(error);
+    if (error instanceof ConflictError) {
+      return response.status(409).json({ conflictingStart: error.conflictingStart, conflictingEnd: error.conflictingEnd });
+    }
     const status = error.status ?? 500;
     let message = error.message;
     if (error.type === 'entity.parse.failed') message = 'Request body must be valid JSON.';
