@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createBooking, listBookings, ValidationError } from '../src/bookings.js';
+import { ConflictError, createBooking, listBookings, ValidationError } from '../src/bookings.js';
 import { createStore } from '../src/store.js';
 
 const validBooking = {
@@ -96,4 +96,63 @@ for (const date of [undefined, '', '2030-2-1', '2030-02-30', 'not-a-date']) {
 
 test('rejects an unknown room filter', () => {
   assert.throws(() => listBookings(createStore(), 'missing', '2030-06-12'), ValidationError);
+});
+
+test('rejects a conflicting booking with a ConflictError naming the existing interval, without storing it', () => {
+  const store = createStore();
+  const existing = createBooking(store, validBooking);
+  assert.throws(
+    () => createBooking(store, { ...validBooking, startTime: '2030-06-12T09:30:00Z', endTime: '2030-06-12T10:30:00Z' }),
+    (error) =>
+      error instanceof ConflictError &&
+      error.status === 409 &&
+      error.conflictingStart === existing.startTime &&
+      error.conflictingEnd === existing.endTime
+  );
+  assert.equal(store.bookings.length, 1);
+});
+
+const intervalRelationships = [
+  ['disjoint, fully before', { startTime: '2030-06-12T07:00:00Z', endTime: '2030-06-12T08:00:00Z' }, false],
+  ['disjoint, fully after', { startTime: '2030-06-12T11:00:00Z', endTime: '2030-06-12T12:00:00Z' }, false],
+  ['adjacent, touching at the existing booking start', { startTime: '2030-06-12T08:00:00Z', endTime: '2030-06-12T09:00:00Z' }, false],
+  ['adjacent, touching at the existing booking end', { startTime: '2030-06-12T10:00:00Z', endTime: '2030-06-12T11:00:00Z' }, false],
+  ['exact match', { startTime: '2030-06-12T09:00:00Z', endTime: '2030-06-12T10:00:00Z' }, true],
+  ['overlap at start', { startTime: '2030-06-12T08:30:00Z', endTime: '2030-06-12T09:30:00Z' }, true],
+  ['overlap at end', { startTime: '2030-06-12T09:30:00Z', endTime: '2030-06-12T10:30:00Z' }, true],
+  ['enclosing', { startTime: '2030-06-12T08:00:00Z', endTime: '2030-06-12T11:00:00Z' }, true],
+  ['enclosed', { startTime: '2030-06-12T09:15:00Z', endTime: '2030-06-12T09:45:00Z' }, true],
+];
+
+for (const [description, interval, shouldConflict] of intervalRelationships) {
+  test(`${shouldConflict ? 'rejects' : 'accepts'} a request that is ${description} relative to an existing 09:00-10:00 booking in the same room`, () => {
+    const store = createStore();
+    createBooking(store, validBooking);
+    const request = { ...validBooking, ...interval };
+    if (shouldConflict) {
+      assert.throws(() => createBooking(store, request), ConflictError);
+      assert.equal(store.bookings.length, 1);
+    } else {
+      createBooking(store, request);
+      assert.equal(store.bookings.length, 2);
+    }
+  });
+}
+
+test('an identical interval remains bookable in a different room', () => {
+  const store = createStore();
+  createBooking(store, validBooking);
+  const result = createBooking(store, { ...validBooking, roomId: 'maple' });
+  assert.equal(result.roomId, 'maple');
+  assert.equal(store.bookings.length, 2);
+});
+
+test('reports the first conflicting booking in stored order when a request overlaps more than one', () => {
+  const store = createStore();
+  const first = createBooking(store, { ...validBooking, startTime: '2030-06-12T09:00:00Z', endTime: '2030-06-12T10:00:00Z' });
+  createBooking(store, { ...validBooking, startTime: '2030-06-12T10:30:00Z', endTime: '2030-06-12T11:30:00Z' });
+  assert.throws(
+    () => createBooking(store, { ...validBooking, startTime: '2030-06-12T09:30:00Z', endTime: '2030-06-12T11:00:00Z' }),
+    (error) => error.conflictingStart === first.startTime && error.conflictingEnd === first.endTime
+  );
 });

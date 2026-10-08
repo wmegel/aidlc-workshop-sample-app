@@ -110,6 +110,35 @@ test('parser errors preserve the JSON error contract', async (t) => {
   assert.deepEqual(await oversized.json(), { error: 'Request body is too large.' });
 });
 
+test('API returns 409 with only the conflicting interval when a booking overlaps an existing one', async (t) => {
+  const request = await setup(t);
+  const created = await request('/api/bookings', post(booking));
+  const stored = await created.json();
+  const conflicting = await request(
+    '/api/bookings',
+    post({ ...booking, startTime: '2030-06-12T09:30:00Z', endTime: '2030-06-12T10:30:00Z' })
+  );
+  assert.equal(conflicting.status, 409);
+  assert.deepEqual(await conflicting.json(), { conflictingStart: stored.startTime, conflictingEnd: stored.endTime });
+  const listed = await request('/api/bookings?roomId=cedar&date=2030-06-12');
+  assert.deepEqual(await listed.json(), [stored]);
+});
+
+test('API accepts a booking that starts exactly when another in the same room ends', async (t) => {
+  const request = await setup(t);
+  await request('/api/bookings', post(booking));
+  const adjacent = await request('/api/bookings', post({ ...booking, startTime: booking.endTime, endTime: '2030-06-12T11:00:00Z' }));
+  assert.equal(adjacent.status, 201);
+});
+
+test('API keeps different rooms independently bookable for the identical interval', async (t) => {
+  const request = await setup(t);
+  const first = await request('/api/bookings', post(booking));
+  assert.equal(first.status, 201);
+  const second = await request('/api/bookings', post({ ...booking, roomId: 'maple' }));
+  assert.equal(second.status, 201);
+});
+
 test('routes remain case-sensitive, exact, and limited to their supported methods', async (t) => {
   const request = await setup(t);
   assert.equal((await request('/api/Rooms')).status, 404);
